@@ -1,0 +1,113 @@
+// Import required modules
+const express = require('express');
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const bodyParser = require('body-parser');
+const cookieParser = require('cookie-parser');
+const path = require('path');
+const multer = require('multer');
+const GridFsStorage = require('multer-gridfs-storage');
+const Grid = require('gridfs-stream');
+const fs = require('fs');
+
+// Connect to MongoDB
+mongoose.connect('mongodb://localhost/dating_app', { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log('Connected to MongoDB'))
+  .catch(err => console.log(err));
+
+// Create a user schema
+const userSchema = new mongoose.Schema({
+  name: {
+    type: String,
+    required: true
+  },
+  email: {
+    type: String,
+    required: true,
+    unique: true
+  },
+  password: {
+    type: String,
+    required: true
+  },
+  gender: {
+    type: String,
+    enum: ['male', 'female'],
+    required: true
+  },
+  age: {
+    type: Number,
+    required: true
+  },
+  profilePicture: {
+    type: String
+  }
+});
+
+// Hash user password before saving to database
+userSchema.pre('save', async function (next) {
+  const user = this;
+  if (user.isModified('password')) {
+    user.password = await bcrypt.hash(user.password, 8);
+  }
+  next();
+});
+
+// Generate authentication token for user
+userSchema.methods.generateAuthToken = async function () {
+  const user = this;
+  const token = jwt.sign({ _id: user._id }, 'datingappsecret');
+  return token;
+};
+
+// Create a user model
+const User = mongoose.model('User', userSchema);
+
+// Set up the express app
+const app = express();
+app.use(bodyParser.urlencoded({ extended: false }));
+app.use(bodyParser.json());
+app.use(cookieParser());
+
+// Set up multer for profile picture uploads
+const storage = new GridFsStorage({
+  url: 'mongodb://localhost/dating_app',
+  file: (req, file) => {
+    return {
+      filename: file.originalname,
+      bucketName: 'profile_pictures'
+    };
+  }
+});
+const upload = multer({ storage });
+
+// Register a new user
+app.post('/users', async (req, res) => {
+  try {
+    const user = new User(req.body);
+    await user.save();
+    const token = await user.generateAuthToken();
+    res.cookie('jwt', token, { httpOnly: true });
+    res.status(201).send({ user, token });
+  } catch (error) {
+    res.status(400).send(error);
+  }
+});
+
+// Upload profile picture for a user
+app.post('/users/:id/profilepicture', upload.single('profilePicture'), async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    user.profilePicture = req.file.id;
+    await user.save();
+    res.send(user);
+  } catch (error) {
+    res.status(500).send(error);
+  }
+});
+
+// Get profile picture for a user
+app.get('/users/:id/profilepicture', async (req, res) => {
+  try {
+    const user = await User.findById(req
